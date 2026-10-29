@@ -146,7 +146,7 @@ public class SOAP_2231_Tinh_Final_Price_Theo_Thue_Giam_Gia {
             } else {
                 inner = inner + "<finalPrice>" + fp + "</finalPrice>";
             }
-            String result = callSoap(endpoint, ns, "submitProductY", sCode, qCode, "<productY>" + inner + "</productY>");
+            String result = callSoap(endpoint, ns, "submitProductY", sCode, qCode, "<data>" + inner + "</data>");
 
             System.out.println("Kết quả server: " + result);
         } catch (Exception e) {

@@ -1,14 +1,15 @@
 package WS;
 
-import java.io.*;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
-import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
-import javax.xml.XMLConstants;
-import javax.xml.parsers.DocumentBuilderFactory;
-import org.w3c.dom.*;
-import org.xml.sax.InputSource;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * [Mã câu hỏi: 1411] WS - DataService
@@ -16,19 +17,25 @@ import org.xml.sax.InputSource;
  *
  * Đề bài:
  * Một dịch vụ web (hỗ trợ SOAP version 1.1) được định nghĩa và mô tả trong tệp DataService?wsdl, được triển khai trên server tại URL http://<Exam_IP>:2221/DataService?wsdl để xử lý các bài toán với dữ liệu nguyên thủy.
- *
+ * 
+ * 
  * Yêu cầu:
  *  Viết chương trình tại máy trạm (WS client) để giao tiếp với DataService thực hiện các công việc sau:
- *
+ * 
+ * 
  * a. Triệu gọi phương thức getData với tham số đầu vào là mã sinh viên (studentCode) và mã câu hỏi (qCode) để nhận về một danh sách số nguyên (List<Integer>) từ server.
- *
+ * 
+ * 
  * b. Thực hiện tính toán tổng của tất cả các phần tử trong danh sách số nguyên nhận được.
- *
+ * 
+ * 
  * c. Triệu gọi phương thức submitDataInt(String studentCode, String qCode, int data) để gửi kết quả tổng đã tính được trở lại server.
- *
+ * 
+ * 
  * Ví dụ:
  *  Nếu mảng số nguyên nhận được từ phương thức getData là [1, 2, 3, 4, 5], chương trình client sẽ tính tổng là 15 và gửi kết quả này trở lại server qua phương thức submitData
- *
+ * 
+ * 
  * d. Kết thúc chương trình client.
  */
 public class WS_1411_Tinh_tong_day_so_nguyen {
@@ -49,12 +56,14 @@ public class WS_1411_Tinh_tong_day_so_nguyen {
             System.out.println("Nhận được: " + items);
 
             // 2. Xử lý theo yêu cầu đề bài
+            List<Integer> a = new ArrayList<>();
+            for (String s : items) a.add(Integer.parseInt(s.trim()));
             // b. Tính tổng các phần tử
-            long sum = 0;
-            for (String s : items) sum += Integer.parseInt(s.trim());
+            int sum = 0;
+            for (int v : a) sum += v;
 
             // 3. Gửi kết quả trở lại server
-            String submitResp = call(endpoint, ns, "submitDataInt", p("studentCode", sCode) + p("qCode", qCode) + p("data", String.valueOf(Math.toIntExact(sum))));
+            String submitResp = call(endpoint, ns, "submitDataInt", p("studentCode", sCode) + p("qCode", qCode) + p("data", String.valueOf(sum)));
             System.out.println("Kết quả gửi: " + submitResp);
 
         } catch (Exception e) {
@@ -62,32 +71,31 @@ public class WS_1411_Tinh_tong_day_so_nguyen {
         }
     }
 
-    // ===== SOAP / XML: chi giu cac ham bai nay su dung =====
+    // ===== Hàm hỗ trợ gọi SOAP / xử lý XML =====
 
-    static String getNamespace(String wsdlUrl) throws Exception {
-        HttpURLConnection conn = (HttpURLConnection) new URL(wsdlUrl).openConnection();
-        conn.setConnectTimeout(5000);
-        conn.setReadTimeout(5000);
+    // Lấy targetNamespace từ WSDL (dùng làm namespace của operation)
+    static String getNamespace(String wsdlUrl) {
         try {
-            String ns = xml(readAll(conn.getInputStream())).getDocumentElement().getAttribute("targetNamespace");
-            if (ns.isEmpty()) throw new IOException("WSDL khong co targetNamespace");
-            return ns;
-        } finally {
-            conn.disconnect();
+            HttpURLConnection c = (HttpURLConnection) new URL(wsdlUrl).openConnection();
+            c.setConnectTimeout(5000);
+            c.setReadTimeout(5000);
+            Matcher m = Pattern.compile("targetNamespace=\"([^\"]+)\"").matcher(readAll(c.getInputStream()));
+            if (m.find()) return m.group(1);
+        } catch (Exception e) {
+            e.printStackTrace();
         }
+        return "http://ws/";
     }
 
-    static String readAll(InputStream in) throws IOException {
-        if (in == null) return "";
-        try (Reader reader = new InputStreamReader(in, StandardCharsets.UTF_8)) {
-            StringBuilder sb = new StringBuilder();
-            char[] buffer = new char[4096];
-            int n;
-            while ((n = reader.read(buffer)) != -1) sb.append(buffer, 0, n);
-            return sb.toString();
-        }
+    static String readAll(java.io.InputStream in) throws Exception {
+        BufferedReader br = new BufferedReader(new InputStreamReader(in, "UTF-8"));
+        StringBuilder sb = new StringBuilder();
+        String line;
+        while ((line = br.readLine()) != null) sb.append(line);
+        return sb.toString();
     }
 
+    // Gửi 1 request SOAP tới operation và trả về XML phản hồi
     static String call(String endpoint, String ns, String op, String params) throws Exception {
         HttpURLConnection conn = (HttpURLConnection) new URL(endpoint).openConnection();
         conn.setRequestMethod("POST");
@@ -96,50 +104,73 @@ public class WS_1411_Tinh_tong_day_so_nguyen {
         conn.setDoOutput(true);
         conn.setConnectTimeout(5000);
         conn.setReadTimeout(5000);
-        String request = "<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\""
-                + " xmlns:ws=\"" + esc(ns) + "\"><s:Body><ws:" + op + ">" + params
-                + "</ws:" + op + "></s:Body></s:Envelope>";
-        try {
-            try (OutputStream out = conn.getOutputStream()) {
-                out.write(request.getBytes(StandardCharsets.UTF_8));
-            }
-            int status = conn.getResponseCode();
-            String resp = readAll(status >= 200 && status < 300 ? conn.getInputStream() : conn.getErrorStream());
-            if (status < 200 || status >= 300) throw new IOException("HTTP " + status + ": " + resp);
-            if (!resp.trim().isEmpty()) {
-                NodeList faults = xml(resp).getElementsByTagNameNS("http://schemas.xmlsoap.org/soap/envelope/", "Fault");
-                if (faults.getLength() > 0) throw new IOException("SOAP Fault: " + faults.item(0).getTextContent());
-            }
-            return resp;
-        } finally {
-            conn.disconnect();
+        String soapRequest =
+            "<soapenv:Envelope xmlns:soapenv=\"http://schemas.xmlsoap.org/soap/envelope/\" xmlns:ws=\"" + ns + "\""
+            + " xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" xmlns:xs=\"http://www.w3.org/2001/XMLSchema\">"
+            + "<soapenv:Header/><soapenv:Body><ws:" + op + ">" + params + "</ws:" + op + ">"
+            + "</soapenv:Body></soapenv:Envelope>";
+        try (OutputStream os = conn.getOutputStream()) {
+            os.write(soapRequest.getBytes("UTF-8"));
+            os.flush();
         }
+        int status = conn.getResponseCode();
+        String resp = readAll(status >= 200 && status < 300 ? conn.getInputStream() : conn.getErrorStream());
+        if (status >= 300) System.out.println("HTTP " + status + ": " + resp);
+        return resp;
     }
 
     static String esc(String s) {
-        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
+    static String unesc(String s) {
+        return s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&");
+    }
+
+    // <name>value</name>
     static String p(String name, String value) {
         return "<" + name + ">" + esc(value) + "</" + name + ">";
     }
 
-    static Document xml(String text) throws Exception {
-        DocumentBuilderFactory f = DocumentBuilderFactory.newInstance();
-        f.setNamespaceAware(true);
-        f.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-        f.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
-        f.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
-        return f.newDocumentBuilder().parse(new InputSource(new StringReader(text)));
+    // Danh sách giá trị đơn: <name>v1</name><name>v2</name>...
+    static String list(String name, List<?> vals) {
+        StringBuilder sb = new StringBuilder();
+        for (Object v : vals) sb.append(p(name, String.valueOf(v)));
+        return sb.toString();
     }
 
-    static List<String> values(String text, String tag) throws Exception {
+    // Danh sách đối tượng (giữ nguyên XML bên trong của từng đối tượng)
+    static String objs(String name, List<String> inners) {
+        StringBuilder sb = new StringBuilder();
+        for (String in : inners) sb.append("<").append(name).append(">").append(in).append("</").append(name).append(">");
+        return sb.toString();
+    }
+
+    // Lấy nội dung (inner XML) của mọi thẻ <tag> trong xml, không phân biệt prefix namespace
+    static List<String> values(String xml, String tag) {
         List<String> out = new ArrayList<>();
-        NodeList nodes = xml(text).getElementsByTagNameNS("*", tag);
-        for (int i = 0; i < nodes.getLength(); i++) {
-            Element e = (Element) nodes.item(i);
-            out.add(e.getTextContent());
-        }
+        Matcher m = Pattern.compile("<(?:\\w+:)?" + tag + "(?:\\s[^>]*)?>(.*?)</(?:\\w+:)?" + tag + ">", Pattern.DOTALL).matcher(xml);
+        while (m.find()) out.add(m.group(1));
         return out;
+    }
+
+    // Giá trị 1 trường trong đối tượng (null nếu không có)
+    static String field(String obj, String tag) {
+        List<String> v = values(obj, tag);
+        return v.isEmpty() ? null : unesc(v.get(0).trim());
+    }
+
+    // Gán giá trị cho 1 trường trong đối tượng (thêm mới nếu chưa có)
+    static String setField(String obj, String tag, String value) {
+        Pattern pt = Pattern.compile("<(?:\\w+:)?" + tag + "(?:\\s[^>]*)?(?:/>|>.*?</(?:\\w+:)?" + tag + ">)", Pattern.DOTALL);
+        Matcher m = pt.matcher(obj);
+        String rep = "<" + tag + ">" + esc(value) + "</" + tag + ">";
+        if (m.find()) return m.replaceFirst(Matcher.quoteReplacement(rep));
+        return obj + rep;
+    }
+
+    // Ngày dạng yyyy-MM-dd... (xsd:date / xsd:dateTime)
+    static LocalDate date(String s) {
+        return LocalDate.parse(s.trim().substring(0, 10));
     }
 }
