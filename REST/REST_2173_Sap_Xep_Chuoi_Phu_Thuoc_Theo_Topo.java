@@ -1,0 +1,272 @@
+package REST;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.time.Duration;
+import java.util.*;
+import java.util.zip.CRC32;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
+
+/**
+ * [Mã câu hỏi: 2173] [REST Method] Sắp xếp chuỗi phụ thuộc theo topo
+ * Loại: REST_METHOD
+ *
+ * Đề bài:
+ * Một dịch vụ REST được triển khai trên server tại URL http://<Exam_IP>:2230/api/rest/method để xử lý các bài toán mô phỏng phương thức xử lý, trạng thái và quan hệ phụ thuộc. Yêu cầu: Viết chương trình tại máy trạm (REST client) để giao tiếp với dịch vụ và thực hiện các công việc sau.
+ * a. Gửi GET /api/rest/method?studentCode=<mã_sinh_viên>&qCode=<qAlias> để nhận JSON gồm requestId và data.
+ * b. Server trả về `data` là object gồm `tasks` và `deps`.
+ * c. Sắp xếp topo các task bằng Kahn để tôn trọng mọi quan hệ phụ thuộc.
+ * d. Gửi PUT /api/rest/method/{requestId} với body JSON gồm studentCode, qCode và answer.
+ * e. Ví dụ: nếu thứ tự hợp lệ là `T1,T2,T4,T3` thì `answer` là `T1,T2,T4,T3`.
+ * (Topo là cách xếp thứ tự công việc có phụ thuộc. Nếu có A -> B thì A phải đứng trước B. Với Kahn, ta luôn chọn các task chưa có phụ thuộc đầu vào (in-degree = 0), đưa vào kết quả, rồi loại ảnh hưởng của chúng để tìm task tiếp theo)
+ * Lưu ý:
+ *  requestId lấy từ phase 1 và truyền trên path /api/rest/method/{requestId}.
+ * 
+ * 
+ * Ví dụ
+ * 
+ * 
+ * Input:  {"tasks":["T1","T2","T3"],"deps":[{"before":"T1","after":"T2"},{"before":"T1","after":"T3"},{"before":"T2","after":"T3"}]}
+ * Output: T1,T2,T3
+ */
+public class REST_2173_Sap_Xep_Chuoi_Phu_Thuoc_Theo_Topo {
+    public static void main(String[] args) {
+        String host = "36.50.135.242";
+        int port = 2230;
+        String sCode = "B23DCCN861";
+        String qCode = "Q2173";
+
+        String urlStr = "http://" + host + ":" + port + "/api/rest/method";
+
+        try {
+            // 1. GET dữ liệu từ REST API
+            Map<String, String> respHeaders = new HashMap<>();
+            String jsonResponse = httpCall("GET", urlStr + "?studentCode=" + sCode + "&qCode=" + qCode, null, null, respHeaders);
+            System.out.println("Received: " + jsonResponse);
+            Map<String, Object> root = map(parseJson(jsonResponse));
+            Object requestId = root.get("requestId");
+            Object data = root.get("data");
+
+            // 2. Xử lý thuật toán và gửi lại kết quả (POST / PUT)
+            Object answer = null;
+            String method = "POST";
+            String target = urlStr + "/submit";
+            Map<String, String> extraHeaders = null;
+            boolean withAnswer = true;
+            {
+            Map<String, Object> d = map(data);
+            List<String> ids = new ArrayList<>();
+            Map<String, Integer> idx = new HashMap<>(), ver = new HashMap<>();
+            for (Object o : list(d.get("tasks"))) { idx.put(str(o), ids.size()); ids.add(str(o)); }
+            Map<String, Integer> indeg = new HashMap<>();
+            Map<String, List<String>> adj = new HashMap<>();
+            for (String id : ids) { indeg.put(id, 0); adj.put(id, new ArrayList<>()); }
+            for (Object o : list(d.get("deps"))) {
+                Map<String, Object> e = map(o);
+                String a = str(e.get("before")), b = str(e.get("after"));
+                if (!idx.containsKey(a) || !idx.containsKey(b)) continue;
+                adj.get(a).add(b);
+                indeg.merge(b, 1, Integer::sum);
+            }
+            // Kahn: các node in-degree = 0 nằm trong hàng đợi ưu tiên
+            PriorityQueue<String> ready = new PriorityQueue<>((x, y) -> {
+                
+                return Integer.compare(idx.get(x), idx.get(y));
+            });
+            for (String id : ids) if (indeg.get(id) == 0) ready.add(id);
+            List<String> order = new ArrayList<>();
+            while (!ready.isEmpty()) {
+                String u = ready.poll();
+                order.add(u);
+                for (String v : adj.get(u)) if (indeg.merge(v, -1, Integer::sum) == 0) ready.add(v);
+            }
+            answer = String.join(",", order);
+            method = "PUT";
+            target = urlStr + "/" + str(requestId);
+            }
+
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("studentCode", sCode);
+            payload.put("qCode", qCode);
+            payload.put("requestId", requestId);
+            if (withAnswer) payload.put("answer", answer);
+            System.out.println("Submit: " + method + " " + target);
+            String result = httpCall(method, target, "GET".equals(method) ? null : toJson(payload), extraHeaders, null);
+            System.out.println("Submit response: " + result);
+
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+    }
+
+    // ===== Hàm tiện ích: gọi HTTP, đọc/ghi JSON =====
+    static String httpCall(String method, String url, String body, Map<String, String> reqHeaders,
+                           Map<String, String> respHeaders) throws Exception {
+        HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(url))
+                .timeout(Duration.ofSeconds(10))
+                .header("Accept", "application/json");
+        if (body != null) b.header("Content-Type", "application/json");
+        if (reqHeaders != null) {
+            for (Map.Entry<String, String> e : reqHeaders.entrySet()) b.header(e.getKey(), e.getValue());
+        }
+        b.method(method, body == null ? HttpRequest.BodyPublishers.noBody()
+                : HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8));
+        HttpResponse<String> resp = HttpClient.newHttpClient()
+                .send(b.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        System.out.println(method + " " + url + " -> HTTP " + resp.statusCode());
+        if (respHeaders != null) {
+            for (Map.Entry<String, List<String>> e : resp.headers().map().entrySet()) {
+                respHeaders.put(e.getKey().toLowerCase(), e.getValue().get(0));
+            }
+        }
+        return resp.body();
+    }
+
+    static int jp;
+
+    static Object parseJson(String s) {
+        jp = 0;
+        return readVal(s);
+    }
+
+    static void skipWs(String s) {
+        while (jp < s.length() && Character.isWhitespace(s.charAt(jp))) jp++;
+    }
+
+    static Object readVal(String s) {
+        skipWs(s);
+        char c = s.charAt(jp);
+        if (c == '{') {
+            Map<String, Object> m = new LinkedHashMap<>();
+            jp++;
+            skipWs(s);
+            if (s.charAt(jp) == '}') { jp++; return m; }
+            while (true) {
+                skipWs(s);
+                String k = (String) readVal(s);
+                skipWs(s);
+                jp++; // dấu ':'
+                m.put(k, readVal(s));
+                skipWs(s);
+                if (s.charAt(jp++) == '}') return m;
+            }
+        }
+        if (c == '[') {
+            List<Object> l = new ArrayList<>();
+            jp++;
+            skipWs(s);
+            if (s.charAt(jp) == ']') { jp++; return l; }
+            while (true) {
+                l.add(readVal(s));
+                skipWs(s);
+                if (s.charAt(jp++) == ']') return l;
+            }
+        }
+        if (c == '"') {
+            StringBuilder sb = new StringBuilder();
+            jp++;
+            while (s.charAt(jp) != '"') {
+                char ch = s.charAt(jp++);
+                if (ch == '\\') {
+                    char e = s.charAt(jp++);
+                    switch (e) {
+                        case 'n': sb.append('\n'); break;
+                        case 't': sb.append('\t'); break;
+                        case 'r': sb.append('\r'); break;
+                        case 'b': sb.append('\b'); break;
+                        case 'f': sb.append('\f'); break;
+                        case 'u': sb.append((char) Integer.parseInt(s.substring(jp, jp + 4), 16)); jp += 4; break;
+                        default: sb.append(e);
+                    }
+                } else {
+                    sb.append(ch);
+                }
+            }
+            jp++;
+            return sb.toString();
+        }
+        if (s.startsWith("true", jp)) { jp += 4; return Boolean.TRUE; }
+        if (s.startsWith("false", jp)) { jp += 5; return Boolean.FALSE; }
+        if (s.startsWith("null", jp)) { jp += 4; return null; }
+        int st = jp;
+        while (jp < s.length() && "+-0123456789.eE".indexOf(s.charAt(jp)) >= 0) jp++;
+        return Double.valueOf(s.substring(st, jp));
+    }
+
+    static String toJson(Object o) {
+        if (o == null) return "null";
+        if (o instanceof Map) {
+            StringBuilder sb = new StringBuilder("{");
+            boolean first = true;
+            for (Map.Entry<?, ?> e : ((Map<?, ?>) o).entrySet()) {
+                if (!first) sb.append(",");
+                first = false;
+                sb.append(toJson(String.valueOf(e.getKey()))).append(":").append(toJson(e.getValue()));
+            }
+            return sb.append("}").toString();
+        }
+        if (o instanceof List) {
+            StringBuilder sb = new StringBuilder("[");
+            boolean first = true;
+            for (Object x : (List<?>) o) {
+                if (!first) sb.append(",");
+                first = false;
+                sb.append(toJson(x));
+            }
+            return sb.append("]").toString();
+        }
+        if (o instanceof Double) return numStr((Double) o);
+        if (o instanceof Number || o instanceof Boolean) return o.toString();
+        String s = o.toString();
+        StringBuilder sb = new StringBuilder("\"");
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            if (ch == '"' || ch == '\\') sb.append('\\').append(ch);
+            else if (ch == '\n') sb.append("\\n");
+            else if (ch == '\r') sb.append("\\r");
+            else if (ch == '\t') sb.append("\\t");
+            else if (ch < 0x20) sb.append(String.format("\\u%04x", (int) ch));
+            else sb.append(ch);
+        }
+        return sb.append("\"").toString();
+    }
+
+    static String numStr(double d) {
+        if (d == Math.rint(d) && Math.abs(d) < 1e15) return Long.toString((long) d);
+        return BigDecimal.valueOf(d).toPlainString();
+    }
+
+    static String str(Object o) {
+        if (o == null) return "";
+        if (o instanceof Double) return numStr((Double) o);
+        return o.toString();
+    }
+
+    static double num(Object o) {
+        if (o instanceof Number) return ((Number) o).doubleValue();
+        return Double.parseDouble(String.valueOf(o).trim());
+    }
+
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> map(Object o) {
+        return (Map<String, Object>) o;
+    }
+
+    @SuppressWarnings("unchecked")
+    static List<Object> list(Object o) {
+        return (List<Object>) o;
+    }
+
+    static String hex(byte[] b) {
+        StringBuilder sb = new StringBuilder();
+        for (byte x : b) sb.append(String.format("%02x", x));
+        return sb.toString();
+    }
+}
